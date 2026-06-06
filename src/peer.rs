@@ -8,7 +8,13 @@ use hbb_common::{
     ResultType,
 };
 use serde_derive::{Deserialize, Serialize};
-use std::{collections::HashMap, collections::HashSet, net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    collections::HashSet,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Instant,
+};
 
 type IpBlockMap = HashMap<String, ((u32, Instant), (HashSet<String>, Instant))>;
 type UserStatusMap = HashMap<Vec<u8>, Arc<(Option<Vec<u8>>, bool)>>;
@@ -62,6 +68,9 @@ pub(crate) type LockPeer = Arc<RwLock<Peer>>;
 #[derive(Clone)]
 pub(crate) struct PeerMap {
     map: Arc<RwLock<HashMap<String, LockPeer>>>,
+    // Reverse index for O(1) address lookups
+    addr_index: Arc<RwLock<HashMap<SocketAddr, String>>>, // exact match (IP + port)
+    ip_index: Arc<RwLock<HashMap<IpAddr, Vec<String>>>>, // fallback (IP only)
     pub(crate) db: database::Database,
 }
 
@@ -84,6 +93,8 @@ impl PeerMap {
         log::info!("DB_URL={}", db);
         let pm = Self {
             map: Default::default(),
+            addr_index: Default::default(),
+            ip_index: Default::default(),
             db: database::Database::new(&db).await?,
         };
         Ok(pm)
@@ -129,6 +140,10 @@ impl PeerMap {
             }
             log::info!("pk updated instead of insert");
         }
+
+        // Update the reverse index with the new address
+        self.update_addr_index(&id, &peer).await;
+
         register_pk_response::Result::OK
     }
 
@@ -176,5 +191,61 @@ impl PeerMap {
     #[inline]
     pub(crate) async fn is_in_memory(&self, id: &str) -> bool {
         self.map.read().await.contains_key(id)
+    }
+
+    // Update the reverse indexes for a peer after its address changes
+    #[inline]
+    async fn update_addr_index(&self, id: &str, peer: &LockPeer) {
+        let addr = peer.read().await.socket_addr;
+        let mut addr_index = self.addr_index.write().await;
+        let mut ip_index = self.ip_index.write().await;
+
+        // Remove old entries for this id
+        // Note: this is O(n) in the worst case; consider tracking old addr if needed
+        for (_, ids) in ip_index.iter_mut() {
+            ids.retain(|i| i != id);
+        }
+        addr_index.retain(|_, i| i != id);
+
+        // Add new entries if address is valid
+        if addr.port() != 0 {
+            addr_index.insert(addr, id.to_owned());
+            ip_index
+                .entry(addr.ip())
+                .or_default()
+                .push(id.to_owned());
+        }
+    }
+
+    #[inline]
+    pub(crate) async fn get_id_by_addr(&self, addr: SocketAddr) -> Option<String> {
+        // O(1) exact match via index
+        {
+            let addr_index = self.addr_index.read().await;
+            if let Some(id) = addr_index.get(&addr) {
+                return Some(id.clone());
+            }
+        }
+
+        // O(1) fallback to IP-only match, then O(k) check where k = peers at this IP
+        let ip = addr.ip();
+        let candidates = {
+            let ip_index = self.ip_index.read().await;
+            ip_index.get(&ip).cloned().unwrap_or_default()
+        };
+
+        // Only return a result if there's exactly one peer at this IP
+        if candidates.len() == 1 {
+            Some(candidates[0].clone())
+        } else if candidates.len() > 1 {
+            log::warn!(
+                "Ambiguous IP lookup for {}: {} peers found",
+                ip,
+                candidates.len()
+            );
+            None
+        } else {
+            None
+        }
     }
 }

@@ -752,11 +752,14 @@ impl RendezvousServer {
                     }
                 });
             let socket_addr = AddrMangle::encode(addr).into();
+            // Lookup the restorer's peer ID by their socket address
+            let requestor_id = self.pm.get_id_by_addr(addr).await;
             if same_intranet {
                 log::debug!(
-                    "Fetch local addr {:?} {:?} request from {:?}",
+                    "Fetch local addr {:?} {:?} request from {:?} {:?}",
                     id,
                     peer_addr,
+                    requestor_id.as_deref(),
                     addr
                 );
                 msg_out.set_fetch_local_addr(FetchLocalAddr {
@@ -766,9 +769,10 @@ impl RendezvousServer {
                 });
             } else {
                 log::debug!(
-                    "Punch hole {:?} {:?} request from {:?}",
+                     "Punch hole {:?} {:?} request from {:?} {:?}",
                     id,
                     peer_addr,
+                    requestor_id.as_deref().unwrap_or("unknown"),
                     addr
                 );
                 msg_out.set_punch_hole(PunchHole {
