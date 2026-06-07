@@ -195,7 +195,7 @@ impl PeerMap {
 
     // Update the reverse indexes for a peer after its address changes
     #[inline]
-    async fn update_addr_index(&self, id: &str, peer: &LockPeer) {
+    pub(crate) async fn update_addr_index(&self, id: &str, peer: &LockPeer) {
         let addr = peer.read().await.socket_addr;
         let mut addr_index = self.addr_index.write().await;
         let mut ip_index = self.ip_index.write().await;
