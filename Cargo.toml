@@ -1,6 +1,6 @@
 [package]
 name = "hbbs"
-version = "1.1.15"
+version = "1.1.17"
 authors = ["rustdesk <info@rustdesk.com>"]
 edition = "2021"
 build = "build.rs"
@@ -76,3 +76,13 @@ panic = 'abort'
 strip = true
 #opt-level = 'z' # only have smaller size after strip # Default is 3, better performance
 #rpath = true # Not needed
+
+[hbbs]
+encrypted_only = true
+RUST_LOG = "info"
+
+
+[hbbr]
+DOWNGRADE_START_CHECK = true
+RUST_LOG = "info"
+RELAY = "192.168.91.25:21117"

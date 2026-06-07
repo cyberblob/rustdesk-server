@@ -8,6 +8,9 @@ case "$1" in
 	  deb-systemd-invoke stop "${SERVICE}" >/dev/null || true
 	  deb-systemd-invoke disable "${SERVICE}" >/dev/null || true
 	;;
+    upgrade)
+	  deb-systemd-invoke stop "${SERVICE}" >/dev/null || true
+	;;
 esac
 
 exit 0
