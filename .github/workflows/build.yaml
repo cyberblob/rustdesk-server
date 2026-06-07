@@ -171,7 +171,7 @@ jobs:
             ui\SignOutput\RustDeskServer.Setup.exe
           if-no-files-found: error
 
-  # github (draft) release with all binaries
+  #Â github (draft) release with all binaries
   release:
 
     name: Github release
@@ -590,7 +590,7 @@ jobs:
           cp -vr debian systemd debian-build/${{ matrix.job.name }}/
           cat debian/control.tpl | sed 's/{{ ARCH }}/${{ matrix.job.debian_platform }}/' > debian-build/${{ matrix.job.name }}/debian/control
           cd debian-build/${{ matrix.job.name }}/
-          debuild -i -us -uc -b -a${{ matrix.job.debian_platform }}
+          debuild -i -us -uc -b -a ${{ matrix.job.debian_platform }}
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
