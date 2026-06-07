@@ -755,7 +755,7 @@ impl RendezvousServer {
             // Lookup the restorer's peer ID by their socket address
             let requestor_id = self.pm.get_id_by_addr(addr).await;
             if same_intranet {
-                log::debug!(
+                log::info!(
                     "Fetch local addr {:?} {:?} request from {:?} {:?}",
                     id,
                     peer_addr,
@@ -768,8 +768,8 @@ impl RendezvousServer {
                     ..Default::default()
                 });
             } else {
-                log::debug!(
-                     "Punch hole {:?} {:?} request from {:?} {:?}",
+                log::info!(
+                    "Punch hole {:?} {:?} request from {:?} {:?}",
                     id,
                     peer_addr,
                     requestor_id.as_deref().unwrap_or("unknown"),
