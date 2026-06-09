@@ -3,9 +3,11 @@
 Description=Rustdesk Signal Server
 
 [Service]
+Environment=RUST_LOG=info
+Environment=ALWAYS_USE_RELAY=Y
 Type=simple
 LimitNOFILE=1000000
-ExecStart=/usr/bin/hbbs
+ExecStart=/usr/bin/hbbs -k _
 WorkingDirectory=/var/lib/rustdesk-server/
 User=
 Group=
