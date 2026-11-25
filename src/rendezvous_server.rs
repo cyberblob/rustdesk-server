@@ -567,28 +567,34 @@ impl RendezvousServer {
         socket_addr: SocketAddr,
         socket: &mut FramedSocket,
     ) -> ResultType<()> {
-        let (request_pk, ip_change) = if let Some(old) = self.pm.get_in_memory(&id).await {
-            let mut old = old.write().await;
-            let ip = socket_addr.ip();
-            let ip_change = if old.socket_addr.port() != 0 {
-                ip != old.socket_addr.ip()
-            } else {
-                ip.to_string() != old.info.ip
-            } && !ip.is_loopback();
-            let request_pk = old.pk.is_empty() || ip_change;
-            if !request_pk {
-                old.socket_addr = socket_addr;
-                old.last_reg_time = Instant::now();
-            }
-            let ip_change = if ip_change && old.reg_pk.0 <= 2 {
-                Some(if old.socket_addr.port() == 0 {
-                    old.info.ip.clone()
+        let (request_pk, ip_change) = if let Some(peer) = self.pm.get_in_memory(&id).await {
+            let (request_pk, ip_change) = {
+                let mut old = peer.write().await;
+                let ip = socket_addr.ip();
+                let ip_change = if old.socket_addr.port() != 0 {
+                    ip != old.socket_addr.ip()
                 } else {
-                    old.socket_addr.to_string()
-                })
-            } else {
-                None
+                    ip.to_string() != old.info.ip
+                } && !ip.is_loopback();
+                let request_pk = old.pk.is_empty() || ip_change;
+                if !request_pk {
+                    old.socket_addr = socket_addr;
+                    old.last_reg_time = Instant::now();
+                }
+                let ip_change = if ip_change && old.reg_pk.0 <= 2 {
+                    Some(if old.socket_addr.port() == 0 {
+                        old.info.ip.clone()
+                    } else {
+                        old.socket_addr.to_string()
+                    })
+                } else {
+                    None
+                };
+                (request_pk, ip_change)
             };
+            if !request_pk {
+                self.pm.update_addr_index(&id, &peer).await;
+            }
             (request_pk, ip_change)
         } else {
             (true, None)
@@ -744,11 +750,14 @@ impl RendezvousServer {
                     }
                 });
             let socket_addr = AddrMangle::encode(addr).into();
+            // Lookup the restorer's peer ID by their socket address
+            let requestor_id = self.pm.get_id_by_addr(addr).await;
             if same_intranet {
-                log::debug!(
-                    "Fetch local addr {:?} {:?} request from {:?}",
+                log::info!(
+                    "Fetch local addr {:?} {:?} request from {:?} {:?}",
                     id,
                     peer_addr,
+                    requestor_id.as_deref(),
                     addr
                 );
                 msg_out.set_fetch_local_addr(FetchLocalAddr {
@@ -757,10 +766,11 @@ impl RendezvousServer {
                     ..Default::default()
                 });
             } else {
-                log::debug!(
-                    "Punch hole {:?} {:?} request from {:?}",
+                log::info!(
+                    "Punch hole {:?} {:?} request from {:?} {:?}",
                     id,
                     peer_addr,
+                    requestor_id.as_deref().unwrap_or("unknown"),
                     addr
                 );
                 msg_out.set_punch_hole(PunchHole {

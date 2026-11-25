@@ -434,7 +434,7 @@ async fn make_pair_(stream: impl StreamTrait, addr: SocketAddr, key: &str, limit
                 if !rf.uuid.is_empty() {
                     let mut peer = PEERS.lock().await.remove(&rf.uuid);
                     if let Some(peer) = peer.as_mut() {
-                        log::info!("Relayrequest {} from {} got paired", rf.uuid, addr);
+                        log::info!("Relay request {} from {} got paired", rf.uuid, addr);
                         let id = format!("{}:{}", addr.ip(), addr.port());
                         USAGE.write().await.insert(id.clone(), Default::default());
                         if !stream.is_ws() && !peer.is_ws() {

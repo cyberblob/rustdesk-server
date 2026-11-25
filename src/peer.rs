@@ -8,7 +8,13 @@ use hbb_common::{
     ResultType,
 };
 use serde_derive::{Deserialize, Serialize};
-use std::{collections::HashMap, collections::HashSet, net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    collections::HashSet,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Instant,
+};
 
 type IpBlockMap = HashMap<String, ((u32, Instant), (HashSet<String>, Instant))>;
 type UserStatusMap = HashMap<Vec<u8>, Arc<(Option<Vec<u8>>, bool)>>;
@@ -62,6 +68,9 @@ pub(crate) type LockPeer = Arc<RwLock<Peer>>;
 #[derive(Clone)]
 pub(crate) struct PeerMap {
     map: Arc<RwLock<HashMap<String, LockPeer>>>,
+    // Reverse index for O(1) address lookups
+    addr_index: Arc<RwLock<HashMap<SocketAddr, String>>>, // exact match (IP + port)
+    ip_index: Arc<RwLock<HashMap<IpAddr, Vec<String>>>>, // fallback (IP only)
     pub(crate) db: database::Database,
 }
 
@@ -84,6 +93,8 @@ impl PeerMap {
         log::info!("DB_URL={}", db);
         let pm = Self {
             map: Default::default(),
+            addr_index: Default::default(),
+            ip_index: Default::default(),
             db: database::Database::new(&db).await?,
         };
         Ok(pm)
@@ -129,6 +140,10 @@ impl PeerMap {
             }
             log::info!("pk updated instead of insert");
         }
+
+        // Update the reverse index with the new address
+        self.update_addr_index(&id, &peer).await;
+
         register_pk_response::Result::OK
     }
 
@@ -176,5 +191,142 @@ impl PeerMap {
     #[inline]
     pub(crate) async fn is_in_memory(&self, id: &str) -> bool {
         self.map.read().await.contains_key(id)
+    }
+
+    // Update the reverse indexes for a peer after its address changes
+    #[inline]
+    pub(crate) async fn update_addr_index(&self, id: &str, peer: &LockPeer) {
+        let addr = peer.read().await.socket_addr;
+        let mut addr_index = self.addr_index.write().await;
+        let mut ip_index = self.ip_index.write().await;
+
+        // Remove old entries for this id
+        // Note: this is O(n) in the worst case; consider tracking old addr if needed
+        for (_, ids) in ip_index.iter_mut() {
+            ids.retain(|i| i != id);
+        }
+        addr_index.retain(|_, i| i != id);
+
+        // Add new entries if address is valid
+        if addr.port() != 0 {
+            addr_index.insert(addr, id.to_owned());
+            ip_index
+                .entry(addr.ip())
+                .or_default()
+                .push(id.to_owned());
+        }
+    }
+
+    #[inline]
+    pub(crate) async fn get_id_by_addr(&self, addr: SocketAddr) -> Option<String> {
+        // O(1) exact match via index
+        {
+            let addr_index = self.addr_index.read().await;
+            if let Some(id) = addr_index.get(&addr) {
+                return Some(id.clone());
+            }
+        }
+
+        // O(1) fallback to IP-only match, then O(k) check where k = peers at this IP
+        let ip = addr.ip();
+        let candidates = {
+            let ip_index = self.ip_index.read().await;
+            ip_index.get(&ip).cloned().unwrap_or_default()
+        };
+
+        // Only return a result if there's exactly one peer at this IP
+        if candidates.len() == 1 {
+            Some(candidates[0].clone())
+        } else if candidates.len() > 1 {
+            log::warn!(
+                "Ambiguous IP lookup for {}: {} peers found",
+                ip,
+                candidates.len()
+            );
+            None
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hbb_common::tokio;
+
+    async fn test_peer_map(name: &str) -> (PeerMap, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "rustdesk_peer_test_{}_{}.sqlite3",
+            name,
+            std::process::id()
+        ));
+        let db = database::Database::new(path.to_str().unwrap()).await.unwrap();
+        let pm = PeerMap {
+            map: Default::default(),
+            addr_index: Default::default(),
+            ip_index: Default::default(),
+            db,
+        };
+        (pm, path)
+    }
+
+    async fn add_peer(pm: &PeerMap, id: &str, addr: &str) {
+        let peer = LockPeer::default();
+        peer.write().await.socket_addr = addr.parse().unwrap();
+        pm.update_addr_index(id, &peer).await;
+    }
+
+    fn remove_db(path: &std::path::Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = path.as_os_str().to_owned();
+            p.push(suffix);
+            std::fs::remove_file(p).ok();
+        }
+    }
+
+    #[tokio::test]
+    async fn get_id_by_addr_exact_fallback_and_ambiguous() {
+        let (pm, path) = test_peer_map("lookup").await;
+        add_peer(&pm, "111111", "192.0.2.10:21116").await;
+        add_peer(&pm, "222222", "192.0.2.20:1000").await;
+        add_peer(&pm, "333333", "192.0.2.20:2000").await;
+
+        // Exact ip:port match
+        assert_eq!(
+            pm.get_id_by_addr("192.0.2.10:21116".parse().unwrap()).await.as_deref(),
+            Some("111111")
+        );
+        // Single peer at this IP, found via the IP-only fallback
+        assert_eq!(
+            pm.get_id_by_addr("192.0.2.10:5555".parse().unwrap()).await.as_deref(),
+            Some("111111")
+        );
+        // Exact match still wins when an IP is shared
+        assert_eq!(
+            pm.get_id_by_addr("192.0.2.20:2000".parse().unwrap()).await.as_deref(),
+            Some("333333")
+        );
+        // Two peers at one IP with no exact match is ambiguous
+        assert_eq!(pm.get_id_by_addr("192.0.2.20:3000".parse().unwrap()).await, None);
+        // Unknown IP
+        assert_eq!(pm.get_id_by_addr("198.51.100.1:1".parse().unwrap()).await, None);
+
+        remove_db(&path);
+    }
+
+    #[tokio::test]
+    async fn update_addr_index_moves_peer_to_new_address() {
+        let (pm, path) = test_peer_map("moves").await;
+        add_peer(&pm, "444444", "192.0.2.30:1000").await;
+        add_peer(&pm, "444444", "198.51.100.30:1000").await;
+
+        assert_eq!(pm.get_id_by_addr("192.0.2.30:1000".parse().unwrap()).await, None);
+        assert_eq!(
+            pm.get_id_by_addr("198.51.100.30:1000".parse().unwrap()).await.as_deref(),
+            Some("444444")
+        );
+
+        remove_db(&path);
     }
 }
